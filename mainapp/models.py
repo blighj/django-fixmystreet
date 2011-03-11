@@ -81,7 +81,7 @@ class Councillor(models.Model):
 class Ward(models.Model):
     name = models.CharField(max_length=100)
     number = models.IntegerField()
-    councillor = models.ForeignKey(Councillor)
+    councillors = models.ManyToManyField(Councillor)
     city = models.ForeignKey(City)
     geom = models.MultiPolygonField( null=True)
     objects = models.GeoManager()
