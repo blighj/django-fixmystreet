@@ -12,7 +12,7 @@ logging.basicConfig(
     filename = '/tmp/fixmystreet.log',
     filemode = 'w'
 )
-        
+
 # Local time zone for this installation. Choices can be found here:
 # http://en.wikipedia.org/wiki/List_of_tz_zones_by_name
 # although not all choices may be available on all operating systems.
@@ -55,12 +55,19 @@ TEMPLATE_LOADERS = (
 #     'django.template.loaders.eggs.load_template_source',
 )
 
+# include request object in template to determine active page
+TEMPLATE_CONTEXT_PROCESSORS = (
+  'django.core.context_processors.request',
+  'django.core.context_processors.auth',
+)
+
 MIDDLEWARE_CLASSES = (
     'django.middleware.common.CommonMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'mainapp.middleware.subdomains.SubdomainMiddleware',
+    'mainapp.middleware.SSLMiddleware.SSLRedirect',
 )
 
 
@@ -86,10 +93,12 @@ INSTALLED_APPS = (
     'django.contrib.sessions',
     'django.contrib.sites',
     'django.contrib.gis',
-    #'contrib.google_analytics',
+    'contrib.google_analytics',
     'contrib.transmeta',
     'mainapp',
 )
+
+AUTH_PROFILE_MODULE = 'mainapp.UserProfile'
 
 
 #################################################################################
@@ -115,7 +124,7 @@ INSTALLED_APPS = (
 #SECRET_KEY=
 #GMAP_KEY=
 #
-#ADMIN_EMAIL = 
+#ADMIN_EMAIL =
 #ADMINS =
 #####################################################################################
 
@@ -133,4 +142,8 @@ except ImportError:
         sys.stderr.write( "local_settings.py not set; using default settings\n" )
 
 
-MANAGERS = ADMINS
+# Using django_testview from here (add 'TESTVIEW' to your local settings): 
+# https://github.com/visiblegovernment/django_testview
+
+if DEBUG and globals().has_key('TESTVIEW'):
+    INSTALLED_APPS += ('django_testview',)

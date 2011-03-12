@@ -15,6 +15,7 @@ def new( request, report_id ):
             update.save()    
             # redirect after a POST       
             return( HttpResponseRedirect( '/reports/updates/create/' ) )
+                
     else:
         update_form = ReportUpdateForm()
         
@@ -37,7 +38,6 @@ def confirm( request, confirm_token ):
         return( HttpResponseRedirect( update.report.get_absolute_url() ))
     
     # is the update fixed?
-    
     if update.is_fixed:
         update.report.is_fixed = True
         update.report.fixed_at = update.created_at
@@ -55,7 +55,6 @@ def confirm( request, confirm_token ):
         update.report.is_confirmed = True
  
     update.report.save()
-    update.send_emails()
-        
+         
     # redirect to report    
     return( HttpResponseRedirect( update.report.get_absolute_url() ))

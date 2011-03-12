@@ -15,8 +15,10 @@ from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy, ugettext as _
 from contrib.transmeta import TransMeta
 from contrib.stdimage import StdImageField
-import libxml2
 from django.utils.encoding import iri_to_uri
+from django.contrib.gis.geos import fromstr
+from django.http import Http404
+from django.contrib.auth.models import User
       
 # from here: http://www.djangosnippets.org/snippets/630/        
 class CCEmailMessage(EmailMessage):
@@ -63,10 +65,16 @@ class City(models.Model):
     def get_absolute_url(self):
         return "/cities/" + str(self.id)
 
+    def get_rule_descriptions(self):
+        rules = EmailRule.objects.filter(city=self)
+        describer = emailrules.EmailRulesDesciber(rules,self)
+        return( describer.values() )
+
     class Meta:
         db_table = u'cities'
 
 class Councillor(models.Model):
+
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     
@@ -74,11 +82,18 @@ class Councillor(models.Model):
     email = models.EmailField(blank=True, null=True)
     fax = models.CharField(max_length=20,blank=True, null=True)
     phone = models.CharField(max_length=20,blank=True, null=True)
+    city = models.ForeignKey(City,null=True)
+
+    def __unicode__(self):      
+        return self.first_name + " " + self.last_name
 
     class Meta:
         db_table = u'councillors'
-   
+
+
+        
 class Ward(models.Model):
+    
     name = models.CharField(max_length=100)
     number = models.IntegerField()
     councillors = models.ManyToManyField(Councillor)
@@ -88,6 +103,9 @@ class Ward(models.Model):
     
     def get_absolute_url(self):
         return "/wards/" + str(self.id)
+
+    def __unicode__(self):      
+        return self.city.name + " " + self.name
 
     # return a list of email addresses to send new problems in this ward to.
     def get_emails(self,report):
@@ -107,6 +125,12 @@ class Ward(models.Model):
                    cc_emails.append(rule_email)
         return( to_emails,cc_emails )
 
+    
+    def get_rule_descriptions(self):
+        rules = EmailRule.objects.filter(city=self.city)
+        describer = emailrules.EmailRulesDesciber(rules,self.city, self)
+        return( describer.values() )
+            
 
     class Meta:
         db_table = u'wards'
@@ -130,6 +154,9 @@ class ReportCategory(models.Model):
     hint = models.TextField(blank=True, null=True)
     category_class = models.ForeignKey(ReportCategoryClass)
   
+    def __unicode__(self):      
+        return self.category_class.name + ":" + self.name
+ 
     class Meta:
         db_table = u'report_categories'
         translate = ('name', 'hint', )
@@ -145,14 +172,15 @@ class ReportCategory(models.Model):
 # want councillors CC'd)
 
 class EmailRule(models.Model):
+    
     TO_COUNCILLOR = 0
     MATCHING_CATEGORY_CLASS = 1
     NOT_MATCHING_CATEGORY_CLASS = 2
     
     RuleChoices = [   
     (TO_COUNCILLOR, 'Send Reports to Councillor Email Address'),
-    (MATCHING_CATEGORY_CLASS, 'Send Reports Matching Category Class (eg. Parks) To This Email'),
-    (NOT_MATCHING_CATEGORY_CLASS, 'Send Reports Not Matching Category Class To This Email'), ]
+    (MATCHING_CATEGORY_CLASS, 'Send Reports Matching Category Group (eg. Parks) To This Email'),
+    (NOT_MATCHING_CATEGORY_CLASS, 'Send Reports Not Matching Category Group To This Email'), ]
     
     RuleBehavior = { TO_COUNCILLOR: emailrules.ToCouncillor,
                      MATCHING_CATEGORY_CLASS: emailrules.MatchingCategoryClass,
@@ -161,20 +189,41 @@ class EmailRule(models.Model):
     rule = models.IntegerField(choices=RuleChoices)
     
     # is this a 'to' email or a 'cc' email
-    is_cc = models.BooleanField(default=False)
+    is_cc = models.BooleanField(default=False,
+            help_text="Set to true to include address in 'cc' list"
+
+            )
 
     # the city this rule applies to 
     city = models.ForeignKey(City)    
     
     # filled in if this is a category class rule
-    category_class = models.ForeignKey(ReportCategoryClass,null=True, blank=True)
+    category_class = models.ForeignKey(ReportCategoryClass,null=True, blank=True,
+                          verbose_name = 'Category Group',
+                          help_text="Only set for 'Category Group' rule types."
+                          )
     
     # filled in if this is a category rule
-    category = models.ForeignKey(ReportCategory,null=True, blank=True)
+    #category = models.ForeignKey(ReportCategory,null=True, blank=True,
+    #                    help_text="Set to send all "
+    #                     )
     
     # filled in if an additional email address is required for the rule type
-    email = models.EmailField(blank=True, null=True)
+    email = models.EmailField(blank=True, null=True,
+                        help_text="Only set for 'Category Group' rule types."
+                        )
     
+    def label(self):
+        rule_behavior = EmailRule.RuleBehavior[ self.rule ]()
+        return( rule_behavior.report_group(self) )
+    
+    def value(self, ward = None):
+        rule_behavior = EmailRule.RuleBehavior[ self.rule ]()
+        if ward:
+            return( rule_behavior.value_for_ward(self,ward) )
+        else:
+            return( rule_behavior.value_for_city(self))
+        
     def get_email(self,report):
         rule_behavior = EmailRule.RuleBehavior[ self.rule ]()
         return( rule_behavior.get_email(report,self))
@@ -266,7 +315,12 @@ class ReportUpdate(models.Model):
     phone = models.CharField(max_length=255, verbose_name = ugettext_lazy("Phone") )
     first_update = models.BooleanField(default=False)
     
-    def send_emails(self):
+    def notify(self):
+        """
+        Tell whoever cares that there's been an update to this report.
+         -  If it's the first update, tell city officials
+         -  Anything after that, tell subscribers
+        """
         if self.first_update:
             self.notify_on_new()
         else:
@@ -318,6 +372,16 @@ class ReportUpdate(models.Model):
 
             
     def save(self):
+        # does this update require confirmation?
+        if not self.is_confirmed:
+            self.get_confirmation()
+        else:
+            self.notify()
+        super(ReportUpdate,self).save()
+            
+            
+    def get_confirmation(self):
+        """ Send a confirmation email to the user. """        
         if not self.confirm_token or self.confirm_token == "":
             m = md5.new()
             m.update(self.email)
@@ -345,7 +409,7 @@ class ReportUpdate(models.Model):
 
 class ReportSubscriber(models.Model):
     """ 
-        Report Subscribers are notified when there's an update.
+        Report Subscribers are notified when there's an update to an existing report.
     """
     
     report = models.ForeignKey(Report)    
@@ -387,7 +451,7 @@ class ReportMarker(GMarker):
         img = "/media/images/marker/%s/marker%s.png" %( color, icon_number )
         name = 'letteredIcon%s' %( icon_number )      
         icon = GIcon(name,image=img,iconsize=(20,34))
-        GMarker.__init__(self,geom=(report.point.x,report.point.y), title=report.title, icon=icon)
+        GMarker.__init__(self,geom=(report.point.x,report.point.y), title=report.title.replace('"',"'"), icon=icon)
 
     def __unicode__(self):
         "The string representation is the JavaScript API call."
@@ -435,102 +499,19 @@ class WardMap(GoogleMap):
 
 class CityMap(GoogleMap):
     """
-        Show all wards in a city as overlays.
+        Show all wards in a city as overlays.  Used when debugging maps for new cities.
     """
     
     def __init__(self,city):
         polygons = []
-        kml_url = 'http://localhost:8000/media/kml/' + city.name + '.kml'
-
         ward = Ward.objects.filter(city=city)[:1][0]
-        #for ward in Ward.objects.filter(city=city):
-        #    for poly in ward.geom:
-        #        polygons.append( GPolygon( poly ) )
-        GoogleMap.__init__(self,center=ward.geom.centroid,zoom=13,key=settings.GMAP_KEY, polygons=polygons, kml_urls=[kml_url],dom_id='map_canvas')
+        for ward in Ward.objects.filter(city=city):
+            for poly in ward.geom:
+                polygons.append( GPolygon( poly ) )
+        GoogleMap.__init__(self,center=ward.geom.centroid,zoom=13,key=settings.GMAP_KEY, polygons=polygons,dom_id='map_canvas')
     
 
 
-class GoogleAddressLookup(object):
-    
-    """
-    Simple Google Geocoder abstraction - supports UTF8
- 
-    >>> doesnt_exist = GoogleAddressLookup("Foobar")
-    >>> doesnt_exist.resolve()
-    True
-    >>> doesnt_exist.exists()
-    False
-
-    # Create test matches
-    >>> single_match = GoogleAddressLookup("4691 Rue Garnier, Montreal Quebec")
-    
-    # Check existence
-    >>> single_match.resolve()
-    True
-    >>> single_match.exists()
-    True
-    >>> single_match.matches_multiple()
-    False
-    >>> single_match.lat(0)
-    '45.5320187'
-    >>> single_match.lon(0)
-    '-73.5789397'
-
-    # multiple matches
-    >>> multiple_matches = GoogleAddressLookup("Beaconsfield")
-    >>> multiple_matches.resolve()
-    True
-    >>> multiple_matches.matches_multiple()
-    True
-    >>> multiple_matches.get_match_options()
-    ['Beaconsfield, QC, Canada', 'Beaconsfield, Buckinghamshire, UK', 'Beaconsfield, St James, NB, Canada', 'Beaconsfield, Andover, NB, Canada', 'Beaconsfield, Norwich, ON, Canada', 'Beaconsfield, Annapolis, Subd. B, NS, Canada', 'Beaconsfield, Withernsea, East Riding of Yorkshire HU19 2, UK', 'Beaconsfield, Stirchley, Telford and Wrekin TF3 1, UK', 'Beaconsfield, Luton LU2 0, UK', 'Beaconsfield TAS, Australia']
-
-    >>> utf8_match = GoogleAddressLookup(u'4691 Rue de Br\xe9beuf Montreal Canada')
-    >>> utf8_match.resolve()
-    True
-    >>> utf8_match.exists()
-    True
-     """
-
-    def __init__(self,address ):
-        self.query_results = []
-        self.match_coords = []
-        self.xpathContext = None
-        self.url = iri_to_uri(u'http://maps.google.ca/maps/geo?q=%s&output=xml&key=%s&oe=utf-8' % (address, settings.GMAP_KEY) )
-    
-    def resolve(self):
-        try:
-            resp = urllib.urlopen(self.url).read()
-            doc = libxml2.parseDoc(resp)
-            self.xpathContext = doc.xpathNewContext()
-            self.xpathContext.xpathRegisterNs('google', 'http://earth.google.com/kml/2.0')
-            self.query_results = self.xpathContext.xpathEval("//google:coordinates")
-            return( True )
-        except:
-            return( False )
-        
-    def exists(self):
-        return len(self.query_results) != 0 
-        
-    def matches_multiple(self):
-        return len(self.query_results) > 1 
-        
-    def lat(self, index ):
-        coord = self.query_results[index] 
-        coord_pair = coord.content.split(',')
-        return( coord_pair[1] ) 
-        
-    def lon(self, index ):
-        coord = self.query_results[index] 
-        coord_pair = coord.content.split(',')
-        return( coord_pair[0] ) 
-                        
-    def get_match_options(self):
-        addr_list = []
-        addr_nodes = self.xpathContext.xpathEval("//google:address")
-        for i in range(0,len(addr_nodes)):
-            addr_list.append(addr_nodes[i].content) 
-        return ( addr_list )
     
 class SqlQuery(object):
     """
@@ -590,8 +571,7 @@ class CityTotals(ReportCountQuery):
         self.sql = self.base_query 
         self.sql += """ from reports left join wards on reports.ward_id = wards.id left join cities on cities.id = wards.city_id 
         """ 
-        self.sql += ' where reports.is_confirmed = True and city_id = %d ' % city.id
-        print self.sql
+        self.sql += ' where reports.is_confirmed = True and wards.city_id = %d ' % city.id
         
 class CityWardsTotals(ReportCountQuery):
 
@@ -687,3 +667,28 @@ class PollingStation(models.Model):
     class Meta:
         db_table = u'polling_stations'
  
+ 
+class UserProfile(models.Model):
+    """
+       limit admin functionality  
+    """
+    user = models.ForeignKey(User, unique=True)
+    city = models.ForeignKey(City, null=True)
+    
+    
+class DictToPoint():
+    
+    def __init__(self, dict ):
+        if not dict.has_key('lat') or not dict.has_key('lon'):
+            raise Http404
+        self.lat = dict['lat']
+        self.lon = dict['lon']
+        
+    def __unicode__(self):
+        return ("POINT(" + self.lon + " " + self.lat + ")" )
+    
+    def pnt(self, srid = None ):
+        pntstr = self.__unicode__()
+        return( fromstr( pntstr, srid=4326) )
+    
+    

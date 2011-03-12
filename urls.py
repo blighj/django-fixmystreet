@@ -13,18 +13,28 @@ feeds = {
     'report_updates': LatestUpdatesByReport,
 }
 
+if settings.DEBUG:
+    SSL_ON = False
+else:
+    SSL_ON = True
+    
 admin.autodiscover()
 urlpatterns = patterns('',
-    (r'^admin/(.*)', admin.site.root),
+    (r'^admin/password_reset/$', 'django.contrib.auth.views.password_reset',{'SSL':SSL_ON}),
+    (r'^password_reset/done/$', 'django.contrib.auth.views.password_reset_done'),
+    (r'^reset/(?P<uidb36>[-\w]+)/(?P<token>[-\w]+)/$', 'django.contrib.auth.views.password_reset_confirm'),
+    (r'^reset/done/$', 'django.contrib.auth.views.password_reset_complete'),
+    (r'^admin/', include(admin.site.urls),{'SSL':SSL_ON}),
     (r'^feeds/(?P<url>.*)/$', 'django.contrib.syndication.views.feed', {'feed_dict': feeds}),
     (r'^i18n/', include('django.conf.urls.i18n')),
 )
 
 
+
 urlpatterns += patterns('mainapp.views.main',
-    (r'^$', 'home'),
+    (r'^$', 'home', {}, 'home_url_name'),
     (r'^search', 'search_address'),
-    (r'about/$', 'about')
+    (r'about/$', 'about',{}, 'about_url_name')
 )
 
 urlpatterns += patterns('mainapp.views.faq',
@@ -36,7 +46,6 @@ urlpatterns += patterns('mainapp.views.promotion',
     (r'^promotions/(\w+)$', 'show'),
 )
 
-
 urlpatterns += patterns('mainapp.views.wards',
     (r'^wards/(\d+)', 'show'),       
     (r'^cities/(\d+)/wards/(\d+)', 'show_by_number'),       
@@ -45,7 +54,7 @@ urlpatterns += patterns('mainapp.views.wards',
 
 urlpatterns += patterns('',
     (r'^cities/(\d+)$', cities.show ),       
-    (r'^cities', cities.index),
+    (r'^cities', cities.index, {}, 'cities_url_name'),
 )
 
 urlpatterns += patterns( 'mainapp.views.reports.updates',
@@ -74,12 +83,17 @@ urlpatterns += patterns('mainapp.views.reports.main',
 
 urlpatterns += patterns('mainapp.views.contact',
     (r'^contact/thanks', 'thanks'),
-    (r'^contact', 'new'),
+    (r'^contact', 'new', {}, 'contact_url_name'),
 )
 
 urlpatterns += patterns('mainapp.views.ajax',
     (r'^ajax/categories/(\d+)', 'category_desc'),
 )
+
+if settings.DEBUG and 'TESTVIEW' in settings.__dir__():
+    urlpatterns += patterns ('',
+    (r'^testview',include('django_testview.urls')))
+
 
 #The following is used to serve up local media files like images
 if settings.LOCAL_DEV:
